@@ -3,7 +3,7 @@
 use chrono::{DateTime, TimeZone, Utc};
 use dns_update::DnsRecord;
 use futures::future::try_join_all;
-use rcgen::{CertificateParams, DistinguishedName, PKCS_ECDSA_P256_SHA256};
+use rcgen::{CertificateParams, DistinguishedName, KeyPair, PKCS_ECDSA_P256_SHA256};
 use rustls::crypto::ring::sign::any_ecdsa_type;
 use rustls::sign::CertifiedKey;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -86,10 +86,13 @@ impl Server {
         let directory = Directory::discover(&provider.directory_url).await?;
         let account = Account::create_with_keypair(directory, provider).await?;
 
-        let mut params = CertificateParams::new(provider.domains.clone());
+        let mut params = CertificateParams::new(provider.domains.clone()).map_err(|err| {
+            EventType::Acme(AcmeEvent::Error)
+                .caused_by(trc::location!())
+                .reason(err)
+        })?;
         params.distinguished_name = DistinguishedName::new();
-        params.alg = &PKCS_ECDSA_P256_SHA256;
-        let cert = rcgen::Certificate::from_params(params).map_err(|err| {
+        let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).map_err(|err| {
             EventType::Acme(AcmeEvent::Error)
                 .caused_by(trc::location!())
                 .reason(err)
@@ -139,12 +142,12 @@ impl Server {
                         Hostname = provider.domains.as_slice(),
                     );
 
-                    let csr = cert.serialize_request_der().map_err(|err| {
+                    let csr = params.serialize_request(&key_pair).map_err(|err| {
                         EventType::Acme(AcmeEvent::Error)
                             .caused_by(trc::location!())
                             .reason(err)
                     })?;
-                    order = account.finalize(order.finalize, csr).await?
+                    order = account.finalize(order.finalize, csr.der()).await?
                 }
                 OrderStatus::Valid { certificate } => {
                     trc::event!(
@@ -154,7 +157,7 @@ impl Server {
                     );
 
                     let pem = [
-                        &cert.serialize_private_key_pem(),
+                        &key_pair.serialize_pem(),
                         "\n",
                         &account.certificate(certificate).await?,
                     ]

@@ -5,7 +5,7 @@ use std::time::Duration;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use hyper::header::USER_AGENT;
-use rcgen::{Certificate, CustomExtension, PKCS_ECDSA_P256_SHA256};
+use rcgen::{CustomExtension, KeyPair, PKCS_ECDSA_P256_SHA256};
 use reqwest::header::CONTENT_TYPE;
 use reqwest::{Method, Response};
 use ring::rand::SystemRandom;
@@ -160,7 +160,7 @@ impl Account {
             .map_err(|err| trc::EventType::Acme(trc::AcmeEvent::Error).from_json_error(err))
     }
 
-    pub async fn finalize(&self, url: impl AsRef<str>, csr: Vec<u8>) -> trc::Result<Order> {
+    pub async fn finalize(&self, url: impl AsRef<str>, csr: &[u8]) -> trc::Result<Order> {
         let payload = format!("{{\"csr\":\"{}\"}}", URL_SAFE_NO_PAD.encode(csr));
         let response = self.request(&url, &payload).await?;
         serde_json::from_str(&response.1)
@@ -182,23 +182,27 @@ impl Account {
     }
 
     pub fn tls_alpn_key(&self, challenge: &Challenge, domain: String) -> trc::Result<Vec<u8>> {
-        let mut params = rcgen::CertificateParams::new(vec![domain]);
+        let mut params = rcgen::CertificateParams::new(vec![domain]).map_err(|err| {
+            trc::EventType::Acme(trc::AcmeEvent::Error)
+                .caused_by(trc::location!())
+                .reason(err)
+        })?;
         let key_auth = key_authorization_sha256(&self.key_pair, &challenge.token)?;
-        params.alg = &PKCS_ECDSA_P256_SHA256;
         params.custom_extensions = vec![CustomExtension::new_acme_identifier(key_auth.as_ref())];
-        let cert = Certificate::from_params(params).map_err(|err| {
+        let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).map_err(|err| {
+            trc::EventType::Acme(trc::AcmeEvent::Error)
+                .caused_by(trc::location!())
+                .reason(err)
+        })?;
+        let cert = params.self_signed(&key_pair).map_err(|err| {
             trc::EventType::Acme(trc::AcmeEvent::Error)
                 .caused_by(trc::location!())
                 .reason(err)
         })?;
 
         Ok(Bincode::new(SerializedCert {
-            certificate: cert.serialize_der().map_err(|err| {
-                trc::EventType::Acme(trc::AcmeEvent::Error)
-                    .caused_by(trc::location!())
-                    .reason(err)
-            })?,
-            private_key: cert.serialize_private_key_der(),
+            certificate: cert.der().to_vec(),
+            private_key: key_pair.serialize_der(),
         })
         .serialize())
     }
