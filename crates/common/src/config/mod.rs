@@ -14,6 +14,11 @@ use hyper::{
     HeaderMap,
 };
 use ring::signature::{EcdsaKeyPair, RsaKeyPair};
+use sec1::{
+    der::{Decode, Encode},
+    pkcs8::{AlgorithmIdentifierRef, PrivateKeyInfo},
+    EcPrivateKey, ALGORITHM_OID,
+};
 use spamfilter::SpamFilterConfig;
 use store::{BlobBackend, BlobStore, FtsStore, InMemoryStore, Store, Stores};
 use telemetry::Metrics;
@@ -235,6 +240,40 @@ pub fn build_ecdsa_pem(
             &ring::rand::SystemRandom::new(),
         )
         .map_err(|err| format!("Failed to parse PKCS8 ECDSA key: {err}")),
+        Ok(Some(rustls_pemfile::Item::Sec1Key(key))) => {
+            // Decode key into SEC1 ECPrivateKey
+            let private_key = key.secret_sec1_der();
+            let ecpkey = EcPrivateKey::from_der(private_key)
+                .map_err(|err| format!("Failed to parse SEC1 ECPrivateKey from ECDSA key: {err}"))?;
+
+            // Get key's curve name OID
+            let params_oid = ecpkey
+                .parameters
+                .and_then(|params| params.named_curve());
+
+            // Manually construct PKCS#8 PrivateKeyInfo from its fields
+            let algorithm = AlgorithmIdentifierRef {
+                oid: ALGORITHM_OID,
+                parameters: params_oid.as_ref().map(Into::into),
+            };
+
+            let pkcs8 = PrivateKeyInfo {
+                algorithm,
+                private_key,
+                public_key: None,
+            };
+
+            // Encode PKCS#8 key to DER
+            let pkcs8 = pkcs8.to_der()
+                .map_err(|err| format!("Failed to encode PKCS8 ECDSA key into DER: {err}"))?;
+
+            Ok(EcdsaKeyPair::from_pkcs8(
+                alg,
+                pkcs8.as_ref(),
+                &ring::rand::SystemRandom::new(),
+            )
+            .map_err(|err| format!("Failed to parse PKCS8 (converted from SEC1) ECDSA key: {err}"))?)
+        },
         Err(err) => Err(format!("Failed to read PEM: {err}")),
         Ok(Some(key)) => Err(format!("Unsupported key type: {key:?}")),
         Ok(None) => Err("No ECDSA key found in PEM".to_string()),
