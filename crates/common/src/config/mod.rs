@@ -14,6 +14,7 @@ use hyper::{
     HeaderMap,
 };
 use ring::signature::{EcdsaKeyPair, RsaKeyPair};
+use sec1::der::{Decode, Encode};
 use spamfilter::SpamFilterConfig;
 use store::{BlobBackend, BlobStore, FtsStore, InMemoryStore, Store, Stores};
 use telemetry::Metrics;
@@ -235,6 +236,32 @@ pub fn build_ecdsa_pem(
             &ring::rand::SystemRandom::new(),
         )
         .map_err(|err| format!("Failed to parse PKCS8 ECDSA key: {err}")),
+        Ok(Some(rustls_pemfile::Item::Sec1Key(key))) => {
+            let private_key = sec1::EcPrivateKey::from_der(key.secret_sec1_der())
+                .map_err(|err| format!("Failed to parse SEC1 ECDSA key: {err}"))?;
+
+            let params_oid = private_key
+                .parameters
+                .and_then(|params| params.named_curve());
+
+            let algorithm = sec1::pkcs8::AlgorithmIdentifierRef {
+                oid: sec1::ALGORITHM_OID,
+                parameters: params_oid.as_ref().map(Into::into),
+            };
+
+            let pkcs8 = sec1::pkcs8::PrivateKeyInfo {
+                algorithm,
+                private_key: &private_key.to_der().unwrap(),
+                public_key: None,
+            };
+
+            Ok(EcdsaKeyPair::from_pkcs8(
+                alg,
+                &pkcs8.to_der().unwrap(),
+                &ring::rand::SystemRandom::new(),
+            )
+            .map_err(|err| format!("Failed to parse PKCS8 (converted from SEC1) ECDSA key: {err}"))?)
+        },
         Err(err) => Err(format!("Failed to read PEM: {err}")),
         Ok(Some(key)) => Err(format!("Unsupported key type: {key:?}")),
         Ok(None) => Err("No ECDSA key found in PEM".to_string()),
