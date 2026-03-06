@@ -19,7 +19,7 @@ mail-builder = { version = "0.4" }
 mail-auth = { version = "0.7.1" }
 mail-send = { version = "0.5", default-features = false, features = ["cram-md5", "ring", "tls12"] }
 smtp-proto = { version = "0.2", features = ["rkyv"] }
-dns-update = { version = "0.1.5" }
+dns-update = { git = "https://github.com/stalwartlabs/dns-update", rev = "070a4cc2cd1bdb1350bdb246848d93bbcdc621f5" } # Replace with the proper new version of dns-update once it's released
 calcard = { version = "0.3", features = ["rkyv"] }
 ahash = { version = "0.8.2", features = ["serde"] }
 parking_lot = "0.12.1"

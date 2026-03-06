@@ -308,6 +308,24 @@ fn build_dns_updater(config: &mut Config, acme_id: &str) -> Option<DnsUpdater> {
             )
         })
         .ok(),
+        "porkbun" => DnsUpdater::new_porkbun(
+            config
+                .value_require(("acme", acme_id, "api-key"))?
+                .trim()
+                .to_string(),
+            config
+                .value_require(("acme", acme_id, "secret"))?
+                .trim()
+                .to_string(),
+            timeout.into(),
+        )
+        .map_err(|err| {
+            config.new_build_error(
+                ("acme", acme_id, "provider"),
+                format!("Failed to create Porkbun DNS updater: {err}"),
+            )
+        })
+        .ok(),
         _ => {
             config.new_parse_error(("acme", acme_id, "provider"), "Unsupported provider");
             None
